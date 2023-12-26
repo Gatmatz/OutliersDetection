@@ -3,10 +3,9 @@ from pyspark.ml.feature import MinMaxScaler, VectorAssembler
 from pyspark.sql import SparkSession
 from pyspark.ml.clustering import KMeans
 from pyspark.ml.linalg import Vectors
-from pyspark.sql.types import DoubleType
-from pyspark.sql.functions import udf
+from pyspark.sql.types import DoubleType, ArrayType
+from pyspark.sql.functions import udf, col
 from pyspark.sql import functions as F
-
 
 # Ask for the dataset path
 filename = input('Give the dataset filename:')
@@ -63,16 +62,42 @@ assembler = VectorAssembler(inputCols=features_col, outputCol="merged_vectorized
 points = assembler.transform(points)
 
 # Step 4.2 : Execute the k-Means algorithm
-kmeans = KMeans(featuresCol='merged_vectorized', predictionCol="Cluster").setK(5).setSeed(1)
+kmeans = KMeans(featuresCol='merged_vectorized', predictionCol="Cluster").setK(10)
 model = kmeans.fit(points)
 points_clustered = model.transform(points)
+points_clustered = points_clustered.drop(*['x_vectorized_scaled', 'y_vectorized_scaled'])
 
+# Step 5 : Outlier Detection using number of samples in each cluster
+# model.summary.predictions.filter(
+#     F.col('prediction').isin(
+#         [cluster_id for (cluster_id, size) in enumerate(model.summary.clusterSizes) if size == 1]
+#     )
+# ).show()
 
-# Step 5 : Outlier Detection
-distFromCenter = udf()
-points_clustered = points_clustered.withColumn("distance_from_center",
-                                               distance_udf("merged_vectorized", model.clusterCenters()))
-# points_clustered.show(5)
+# Step 5 : Outlier Detection using distance from center and a threshold
+
+# Step 5.1 : Find the optimal threshold
+threshold = 0.109
+
+# Step 5.2 : Add the coordinates of each cluster to initial DataFrame
+centers = model.clusterCenters()  # Extract cluster centers
+centers_df = spark.createDataFrame([(i, Vectors.dense(center)) for i, center in enumerate(centers)],
+                                   ["center_id", "center"])  # Create a DataFrame with cluster centers
+
+points_distance = points_clustered.join(centers_df, on=points_clustered['Cluster'] == centers_df[
+    'center_id'])  # Join the original DataFrame with the cluster centers DataFrame
+
+# Step 5.3 : Calculate distance for each point to its assigned cluster center
+distance_udf = udf(lambda features, center: float(Vectors.squared_distance(features, center)), DoubleType())
+points_distance = points_distance.withColumn("distance_to_cluster_center",
+                                             distance_udf(col("merged_vectorized"), col("center")))
+
+# Step 5.4 : Filter the outliers using the threshold value
+outliers = points_distance.filter(col("distance_to_cluster_center") > threshold)
+
+# Show the outliers
+outliers = outliers.drop(*['center_id', 'center', 'Cluster', 'distance_to_cluster_center'])
+outliers.show(truncate=False)
 
 # Stop Spark Context
 spark.stop()
