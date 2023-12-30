@@ -70,50 +70,43 @@ assembler = VectorAssembler(inputCols=features_col, outputCol="merged_vectorized
 points = assembler.transform(points)
 
 # Step 4.2 : Execute the k-Means algorithm
-kmeans = KMeans(featuresCol='merged_vectorized', predictionCol="Cluster").setK(10)
+kmeans = KMeans(featuresCol='merged_vectorized', predictionCol="Cluster").setK(50)
 model = kmeans.fit(points)
 points_clustered = model.transform(points)
 points_clustered = points_clustered.drop(*['x_vectorized_scaled', 'y_vectorized_scaled'])
 
 # Step 4.3 : Calculate the accuracy and silhouette of clustering
-evaluator = ClusteringEvaluator(featuresCol='merged_vectorized', predictionCol="Cluster")
-silhouette = evaluator.evaluate(points_clustered)
-print("Silhouette with squared euclidean distance = " + str(silhouette))
+# evaluator = ClusteringEvaluator(featuresCol='merged_vectorized', predictionCol="Cluster")
+# silhouette = evaluator.evaluate(points_clustered)
+# print("Silhouette with squared euclidean distance = " + str(silhouette))
 
-# Step 5 : Cluster Based Outlier Detection
-# print(model.summary.clusterSizes)
-# model.summary.predictions.filter(
-#     F.col('Cluster').isin(
-#         [cluster_id for (cluster_id, size) in enumerate(model.summary.clusterSizes) if size < 4]
-#     )
-# ).show()
 
-# Step 5 : Outlier Detection using distance from center and a threshold
-
-# Step 5.1 : Find the optimal threshold
-# threshold = 0.0555
-#
+# Step 5 : Outlier Detection using distance from center and Percentiles
 # # Step 5.2 : Add the coordinates of each cluster to initial DataFrame
-# centers = model.clusterCenters()  # Extract cluster centers
-# centers_df = spark.createDataFrame([(i, Vectors.dense(center)) for i, center in enumerate(centers)],
-#                                    ["center_id", "center"])  # Create a DataFrame with cluster centers
-#
-# points_distance = points_clustered.join(centers_df, on=points_clustered['Cluster'] == centers_df[
-#     'center_id'])  # Join the original DataFrame with the cluster centers DataFrame
-#
-# # Step 5.3 : Calculate distance for each point to its assigned cluster center
-# distance_udf = udf(lambda features, center: float(Vectors.squared_distance(features, center)), DoubleType())
-# points_distance = points_distance.withColumn("distance_to_cluster_center",
-#                                              distance_udf(col("merged_vectorized"), col("center")))
-#
-# # Step 5.4 : Filter the outliers using the threshold value
-# outliers = points_distance.filter(col("distance_to_cluster_center") > threshold)
-# points_distance = points_distance.filter(col("distance_to_cluster_center") <= threshold)
-#
-# # Show the outliers
-# outliers = outliers.drop(*['center_id', 'center', 'Cluster', 'distance_to_cluster_center'])
-# outliers.show(truncate=False)
-#
+centers = model.clusterCenters()  # Extract cluster centers
+centers_df = spark.createDataFrame([(i, Vectors.dense(center)) for i, center in enumerate(centers)],
+                                   ["center_id", "center"])  # Create a DataFrame with cluster centers
+
+points_distance = points_clustered.join(centers_df, on=points_clustered['Cluster'] == centers_df[
+    'center_id'])  # Join the original DataFrame with the cluster centers DataFrame
+
+# Step 5.3 : Calculate distance for each point to its assigned cluster center
+distance_udf = udf(lambda features, center: float(Vectors.squared_distance(features, center)), DoubleType())
+points_distance = points_distance.withColumn("distance_to_cluster_center",
+                                             distance_udf(col("merged_vectorized"), col("center")))
+
+# Step 5.4: Set a threshold based on percentiles
+percentile_threshold = 99.99
+
+# Calculate the threshold value based on the specified percentile
+threshold_value = points_distance.approxQuantile("distance_to_cluster_center", [percentile_threshold / 100], 0.0)[0]
+
+# Identify outliers using the percentile threshold
+outliers = points_distance.filter(col("distance_to_cluster_center") > threshold_value)
+
+# Show the outliers
+outliers.show(truncate=False)
+
 # kmeans = KMeans(featuresCol='merged_vectorized', predictionCol="NewCluster").setK(10)
 # model = kmeans.fit(points_distance)
 # points_clustered = model.transform(points_distance)
@@ -132,7 +125,6 @@ plt.xlabel("X-axis")
 plt.ylabel("Y-axis")
 plt.legend()
 plt.show()
-
 
 # Stop Spark Context
 spark.stop()
