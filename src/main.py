@@ -3,12 +3,10 @@ from pyspark.ml.feature import MinMaxScaler, VectorAssembler
 from pyspark.sql import SparkSession
 from pyspark.ml.clustering import KMeans
 from pyspark.ml.linalg import Vectors
-from pyspark.sql.types import DoubleType, ArrayType, StructType, StructField
+from pyspark.sql.types import DoubleType
 from pyspark.sql.functions import udf, col
-from pyspark.sql import functions as F
-from pyspark.ml.evaluation import ClusteringEvaluator
-import matplotlib.pyplot as plt
 import pandas as pd
+import matplotlib.pyplot as plt
 
 # Ask for the dataset path
 filename = input('Give the dataset filename:')
@@ -70,24 +68,19 @@ assembler = VectorAssembler(inputCols=features_col, outputCol="merged_vectorized
 points = assembler.transform(points)
 
 # Step 4.2 : Execute the k-Means algorithm
-kmeans = KMeans(featuresCol='merged_vectorized', predictionCol="Cluster").setK(50)
+kmeans = KMeans(featuresCol='merged_vectorized', predictionCol="Cluster").setK(15).setSeed(3)
 model = kmeans.fit(points)
 points_clustered = model.transform(points)
 points_clustered = points_clustered.drop(*['x_vectorized_scaled', 'y_vectorized_scaled'])
 
-# Step 4.3 : Calculate the accuracy and silhouette of clustering
-# evaluator = ClusteringEvaluator(featuresCol='merged_vectorized', predictionCol="Cluster")
-# silhouette = evaluator.evaluate(points_clustered)
-# print("Silhouette with squared euclidean distance = " + str(silhouette))
-
-
 # Step 5 : Outlier Detection using distance from center and Percentiles
-# # Step 5.2 : Add the coordinates of each cluster to initial DataFrame
+# Step 5.2 : Add the coordinates of each cluster to initial DataFrame
 centers = model.clusterCenters()  # Extract cluster centers
 centers_df = spark.createDataFrame([(i, Vectors.dense(center)) for i, center in enumerate(centers)],
                                    ["center_id", "center"])  # Create a DataFrame with cluster centers
 
-points_distance = points_clustered.join(centers_df, on=points_clustered['Cluster'] == centers_df[
+points_distance = points_clustered \
+    .join(centers_df, on=points_clustered['Cluster'] == centers_df[
     'center_id'])  # Join the original DataFrame with the cluster centers DataFrame
 
 # Step 5.3 : Calculate distance for each point to its assigned cluster center
@@ -96,31 +89,29 @@ points_distance = points_distance.withColumn("distance_to_cluster_center",
                                              distance_udf(col("merged_vectorized"), col("center")))
 
 # Step 5.4: Set a threshold based on percentiles
-percentile_threshold = 99.99
+percentile_threshold = 99
 
 # Calculate the threshold value based on the specified percentile
 threshold_value = points_distance.approxQuantile("distance_to_cluster_center", [percentile_threshold / 100], 0.0)[0]
 
 # Identify outliers using the percentile threshold
 outliers = points_distance.filter(col("distance_to_cluster_center") > threshold_value)
+# outliers = outliers.orderBy(F.desc("distance_to_cluster_center")).limit(10)
 
 # Show the outliers
 outliers.show(truncate=False)
 
-# kmeans = KMeans(featuresCol='merged_vectorized', predictionCol="NewCluster").setK(10)
-# model = kmeans.fit(points_distance)
-# points_clustered = model.transform(points_distance)
-# evaluator = ClusteringEvaluator(featuresCol='merged_vectorized', predictionCol="NewCluster")
-# silhouette = evaluator.evaluate(points_clustered)
-# print("Silhouette with squared euclidean distance = " + str(silhouette))
 
-# Scatter plot the initial points and the cluster centers
-# Get the cluster centers
+# Scatter plot the initial points, the cluster centers and the outliers
 centers = model.clusterCenters()
 pandas_centers_df = pd.DataFrame(centers, columns=["x", "y"])
+outliers_df = pd.DataFrame(outliers.toPandas(), columns=['merged_vectorized'])
+outliers_df[['x', 'y']] = outliers_df['merged_vectorized'].apply(pd.Series)
+outliers_df = outliers_df.drop('merged_vectorized', axis=1)
 plt.scatter(pandas_df["x"], pandas_df["y"])
 plt.scatter(pandas_centers_df["x"], pandas_centers_df["y"], marker="X", color="red")
-plt.title("KMeans Cluster Centers in PySpark")
+plt.scatter(outliers_df["x"], outliers_df["y"], marker="X", color="yellow")
+plt.title("KMeans Cluster Centers and Outlier Detection")
 plt.xlabel("X-axis")
 plt.ylabel("Y-axis")
 plt.legend()
