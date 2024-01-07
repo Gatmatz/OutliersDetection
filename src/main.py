@@ -1,13 +1,12 @@
+# Import the necessary libraries
 import sys
 from time import time
 from pyspark.ml.feature import MinMaxScaler, VectorAssembler
 from pyspark.sql import SparkSession
-from pyspark.ml.clustering import KMeans, BisectingKMeans
+from pyspark.ml.clustering import KMeans
 from pyspark.ml.linalg import Vectors
 from pyspark.sql.types import DoubleType, ArrayType
 from pyspark.sql.functions import udf, col
-import pandas as pd
-import matplotlib.pyplot as plt
 
 # Setup for asking the dataset path in spark-submit
 if len(sys.argv) != 2:
@@ -55,11 +54,6 @@ for column in columns:
 # Step 3.4 : Drop the vectorized non-scaled points
 points = points.drop(*['x_vectorized', 'y_vectorized'])
 
-# Save the normalization to a Pandas DataFrame for scattering
-pandas_df = points.toPandas()
-pandas_df['x'] = pandas_df['x_vectorized_scaled'].apply(lambda x: x[0])
-pandas_df['y'] = pandas_df['y_vectorized_scaled'].apply(lambda x: x[0])
-
 # Step 4 : Execute the k-means algorithm
 # Step 4.1 : Merge the two features into one VectorUDT feature
 # Based on :
@@ -73,7 +67,7 @@ kmeans = KMeans(featuresCol='merged_vectorized', predictionCol="Cluster").setK(3
 model = kmeans.fit(points)
 points_clustered = model.transform(points)
 
-# Step 4.3 : Execute the k-Means algorithm
+# Step 4.3 : Drop the scaled vectorized columns
 points_clustered = points_clustered.drop(*['x_vectorized_scaled', 'y_vectorized_scaled'])
 
 # Step 5 : Outlier Detection using distance from center and z-score
@@ -106,28 +100,21 @@ z_threshold = 5.4
 # Step 5.7: Identify outliers using the z-score threshold
 outliers = points_clustered.filter(col("z_score") > z_threshold)
 
+# Step 5.7a : If a dataset does not have such a high z-score samples.
+# Using quantiles find a z-score threshold that is 99.9% furthest.
+if outliers.isEmpty():
+    q_threshold = 0.999
+    z_threshold = points_clustered.approxQuantile("z_score", [q_threshold], 0.0)[0]
+    outliers = points_clustered.filter(col("z_score") > z_threshold)
+
 # Step 5.8: Drop unnecessary columns and show the outliers
-outliers.drop(*['merged_vectorized', 'Cluster', 'Center', 'distance_to_cluster_center', 'z_score']).show(truncate=False)
+outliers.drop(*['merged_vectorized', 'Cluster', 'Center', 'distance_to_cluster_center', 'z_score']).show(outliers.count(), truncate=False)
 
 # Stop the timer that captures the execution time of main function
 main_end = time()
 
-# Scatter plot the initial points, the cluster centers and the outliers
-# pandas_centers_df = pd.DataFrame(centers, columns=["x", "y"])
-# outliers_df = pd.DataFrame(outliers.toPandas(), columns=['merged_vectorized'])
-# outliers_df[['x', 'y']] = outliers_df['merged_vectorized'].apply(pd.Series)
-# outliers_df = outliers_df.drop('merged_vectorized', axis=1)
-# plt.scatter(pandas_df["x"], pandas_df["y"])
-# plt.scatter(pandas_centers_df["x"], pandas_centers_df["y"], marker="X", color="yellow")
-# plt.scatter(outliers_df["x"], outliers_df["y"], marker="X", color="red")
-# plt.title("KMeans Cluster Centers and Outlier Detection")
-# plt.xlabel("X axis")
-# plt.ylabel("Y axis")
-# plt.legend()
-# plt.show()
+# Print the execution time of Spark program
+print("Execution Time of Main = ", main_end - main_start)
 
 # Stop Spark Context
 spark.stop()
-
-# Print the execution time of Spark program
-print("Execution Time of Main = ", main_end - main_start)
