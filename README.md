@@ -28,5 +28,5 @@ conda env create -f environment.yml
 ### 3. Run the Spark Job:
 
 ```bash
-spark-submit outlier_detection.py --input <path_to_input_data> --output <path_to_output_results>
+spark-submit <main.py path> <dataset path>
 ```
